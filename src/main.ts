@@ -5,7 +5,7 @@ import { AppModule } from './app.module';
 import requestLogger from './common/middleware/request-logging.middleware';
 import { configureBodySizeLimit } from './common/http/body-size-limit';
 import { validateEnv } from './config/env.validation';
-import { IsoUtcTimestampInterceptor } from './common/interceptors';
+import { IsoUtcTimestampInterceptor } from './common/interceptors/request-id.interceptor';
 
 /**
  * Parses the CORS_ALLOWED_ORIGINS env var into an array of allowed origins.

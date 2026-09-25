@@ -329,6 +329,105 @@ requires `X-Recovery-Admin-Secret` and `X-Admin-ID`; production requires
 
 Mux Backend supports Stellar fee-bump transactions, allowing a platform sponsor account to pay transaction fees on behalf of users. The `FeeBumpService` wraps signed inner transactions in a fee-bump envelope before submission to Horizon.
 
+#### Fee Sponsorship Budgets
+
+Mux Backend provides fee sponsorship budgets, allowing a sponsor to set a spending limit on how much they are willing to pay in transaction fees on behalf of a sponsored wallet. This is a core primitive for account abstraction on Stellar/Soroban.
+
+##### Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/v1/fee-sponsorship` | Create a new fee sponsorship budget |
+| `GET` | `/v1/fee-sponsorship/:id` | Get a budget by ID |
+| `GET` | `/v1/fee-sponsorship` | List budgets for a wallet |
+| `PATCH` | `/v1/fee-sponsorship/:id` | Update a budget (limit, remaining, status, note) |
+| `POST` | `/v1/fee-sponsorship/:id/close` | Close (deactivate) a budget |
+
+##### Create Budget (`POST /v1/fee-sponsorship`)
+
+**Request Body**:
+```json
+{
+  "walletId": "uuid-wallet-id",
+  "sponsorId": "sponsor-address-or-id",
+  "limitAmount": "1000000",
+  "assetCode": "XLM",
+  "assetIssuer": null,
+  "network": "TESTNET",
+  "note": "Monthly sponsorship allowance",
+  "idempotencyKey": "unique-key-for-replay-protection"
+}
+```
+
+**Response** (201 Created):
+```json
+{
+  "id": "uuid-budget-id",
+  "walletId": "uuid-wallet-id",
+  "sponsorId": "sponsor-address-or-id",
+  "limitAmount": "1000000",
+  "remainingAmount": "1000000",
+  "assetCode": null,
+  "assetIssuer": null,
+  "network": "TESTNET",
+  "status": "ACTIVE",
+  "note": "Monthly sponsorship allowance",
+  "createdAt": "2026-07-30T12:00:00.000Z",
+  "updatedAt": "2026-07-30T12:00:00.000Z"
+}
+```
+
+##### Update Budget (`PATCH /v1/fee-sponsorship/:id`)
+
+**Request Body** (all fields optional):
+```json
+{
+  "limitAmount": "2000000",
+  "remainingAmount": "1500000",
+  "status": "PAUSED",
+  "note": "Paused for review",
+  "idempotencyKey": "unique-key-for-replay-protection"
+}
+```
+
+##### Close Budget (`POST /v1/fee-sponsorship/:id/close`)
+
+Idempotent: closing an already-closed budget returns the existing budget with no error.
+
+##### Error Codes
+
+| Code | HTTP Status | Description |
+|------|-------------|-------------|
+| `FEE_SPONSORSHIP_INVALID_INPUT` | 400 | Missing or invalid field |
+| `FEE_SPONSORSHIP_NOT_AUTHORIZED` | 403 | Caller is not authorized |
+| `FEE_SPONSORSHIP_BUDGET_NOT_FOUND` | 404 | Budget does not exist |
+| `FEE_SPONSORSHIP_BUDGET_ALREADY_EXISTS` | 409 | Active budget already exists for wallet+network |
+| `FEE_SPONSORSHIP_BUDGET_CLOSED` | 409 | Budget is closed and cannot be updated |
+| `FEE_SPONSORSHIP_BUDGET_EXCEEDED` | 400 | Remaining amount exceeds limit |
+| `FEE_SPONSORSHIP_FEATURE_FLAG_DISABLED` | 403 | Mainnet fee sponsorship is disabled |
+| `FEE_SPONSORSHIP_DEPENDENCY_UNAVAILABLE` | 503 | Database or upstream dependency unavailable |
+
+##### Feature Flag
+
+Fee sponsorship writes to mainnet are gated by the `FEE_SPONSORSHIP_ENABLED` environment variable. Default OFF (fail-closed): mainnet fee sponsorship is denied unless explicitly enabled.
+
+| Value | Behavior |
+|-------|----------|
+| `true` | Mainnet fee sponsorship proceeds |
+| `false` / unset (default) | Mainnet fee sponsorship is rejected with `403 Forbidden` |
+
+TESTNET fee sponsorship is unaffected — the flag is only consulted when `network === "MAINNET"`.
+
+##### Invariants
+
+- A wallet may have at most one active budget per network.
+- Budgets are deny-by-default: only the wallet owner or an authorized delegate/guardian may manage budgets.
+- All monetary amounts are stored as strings (smallest unit, e.g., stroops) to preserve precision.
+- The server is the source of truth for spend tracking.
+- Fail-closed: dependency outages return 503, never silently succeed.
+- Idempotent: concurrent/replayed requests with the same idempotency key return the same result.
+- No secrets in logs or responses.
+
 ### Mainnet Payment Submit Kill-Switch
 
 The `FEATURE_MAINNET_PAYMENT_SUBMIT` environment variable gates mainnet fee-bump
@@ -343,6 +442,25 @@ TESTNET submissions are unaffected — the flag is only consulted when `network 
 The check runs inside `FeeBumpService.submitFeeBump` before any wallet key material is
 decrypted or any call to Horizon is made. See [docs/MAINNET-PAYMENT-FEATURE-FLAG.md](docs/MAINNET-PAYMENT-FEATURE-FLAG.md)
 for operational guidance.
+
+### Transaction Environment Validator (fail-closed boot gate)
+
+`TransactionEnvValidatorService` validates the transaction money-path
+configuration at startup and **fails closed**:
+
+- In `NODE_ENV=production`, enabling `FEATURE_MAINNET_PAYMENTS` or
+  `FEATURE_MAINNET_PAYMENT_SUBMIT` without
+  `STELLAR_HORIZON_MAINNET_URL` **prevents the application from booting** with
+  a stable, typed error code
+  (`TRANSACTION_ENV_VALIDATOR_MAINNET_HORIZON_MISCONFIGURED`).
+- Unset or unrecognized flag values are treated as disabled (deny-by-default);
+  testnet and non-production environments are never blocked.
+- Startup snapshots log only booleans and stable codes — never secrets, keys,
+  JWTs, or webhook secrets.
+
+Covered end-to-end in `test/transaction-env-validator.e2e-spec.ts` and
+unit-tested in `src/transactions/transaction-env-validator.service.spec.ts`.
+Runbook: [docs/MAINNET-PAYMENT-FEATURE-FLAG.md](docs/MAINNET-PAYMENT-FEATURE-FLAG.md).
 
 ### Webhook-Delivered Payment Events
 
@@ -500,7 +618,45 @@ Mux Backend uses a consolidated `KeyManagementService` for all cryptographic key
 - [Key Management Consolidation Guide](docs/key-management-consolidation.md)
 - [Migration Guide](docs/MIGRATION-KEY-MANAGEMENT.md)
 
+**Verification (CI):**
+- `pnpm verify:key-consolidation` runs the typed static gate in
+  `scripts/verify-key-management-consolidation.ts` (workflow already covers
+  `docs/key-management-consolidation.md`, `docs/custody-security-model.md`, and
+  `docs/MAINNET-PAYMENT-FEATURE-FLAG.md`). It check that custody-key invariants hold:
+  no direct key generation in money-path services, no committed key material,
+  envelope-at-rest schema fields, deny-by-default authz, correlation ids, stable
+  error codes, fail-closed dependency handling, response redaction, the mainnet
+  money-path kill-switch default, and required runbooks.
+- Fail-closed: exit code `0` = pass, `1` = at least one error finding,
+  `2`/`3` = verifier failure or misuse. Add `--json` for the machine-readable
+  report. This gate runs as a **required** GitHub Actions check and cannot be
+  disabled with an environment variable (deny-by-default).
+
 > ⚠️ This MVP uses a custodial model. Progressive decentralization is planned.
+
+### Verification Scripts (CI Gates)
+
+Four fail-closed verification scripts assert the documented security invariants
+against the source tree and Prisma schema. They run in CI (the `verify-scripts`
+job) and exit **non-zero when any invariant is violated**, so a regression is
+surfaced as a failed PR rather than a silent drift. Run them locally from the
+repo root with `bash <script>.sh` — they are plain bash + static analysis, need
+no database/RPC/Horizon connection, and never print raw key material.
+
+| Script | Invariants verified | References |
+|--------|--------------------|------------|
+| `verify-encryption.sh` | Keys encrypted before storage; env-based key; controlled decryption; safe failure handling; no plaintext persistence; strong cipher; boot validation | [`docs/custody-security-model.md`](docs/custody-security-model.md), README § Security |
+| `verify-orchestrator.sh` | Orchestrator presence; atomic creation; one-wallet-per-user; idempotency; fail-closed outages; authz; feature-flag gate | [`docs/WALLET-API.md`](docs/WALLET-API.md), [`docs/FEATURE-FLAGS.md`](docs/FEATURE-FLAGS.md), [`test/wallet-orchestration.e2e-spec.ts`](test/wallet-orchestration.e2e-spec.ts) |
+| `verify-idempotent-user.sh` | `findOrCreateUser`; `authId` uniqueness; existing-user return; authz; schema invariants; fail-closed outages | [`test/users-find-or-create.e2e-spec.ts`](test/users-find-or-create.e2e-spec.ts), [`prisma/schema.prisma`](prisma/schema.prisma) |
+| `scripts/verify-key-management-consolidation.sh` | Key-management consolidation invariants | [`docs/key-management-consolidation.md`](docs/key-management-consolidation.md), [`docs/MIGRATION-KEY-MANAGEMENT.md`](docs/MIGRATION-KEY-MANAGEMENT.md) |
+
+Treat a failing verification script as a failed PR — do not bypass it with
+`continue-on-error`. If a check is outdated because a documented invariant
+changed, update **both** the script and its cited reference document in the same
+PR.
+
+See the [Verification Scripts Runbook](docs/verify-scripts-runbook.md) for the
+full invariant list, failure interpretation, and rollback strategy.
 
 ---
 
@@ -705,6 +861,45 @@ adapter or use a custom HTTP sink.
 * Wallet recovery flows
 * Fiat on/off-ramps via Stellar anchors
 * Optional self-custody export for advanced users
+
+---
+
+## Container Hardening
+
+The production `Dockerfile` runs the API as a non-root user (`mux`, UID 1001)
+with defense-in-depth controls. This is part of the container hardening
+initiative for production-grade deployments.
+
+### What the Dockerfile does
+
+| Control | Detail |
+|---------|--------|
+| Non-root user | A dedicated `mux` user (UID 1001) owns all application files and runs the process. The container never runs as root. |
+| No new privileges | `security_opt: no-new-privileges:true` in `docker-compose.yml` prevents the container from gaining additional capabilities at runtime. |
+| Minimal runtime image | The production image uses `node:22-alpine` with only production dependencies, built artifacts, and Prisma migrations. Build tools and source code are not present. |
+| Fail-closed migrations | `docker-entrypoint.sh` runs `prisma migrate deploy` before starting the app. If migrations fail, the container exits non-zero so orchestrators (Kubernetes, ECS) detect the failure immediately. |
+| No secrets in image | Secrets are injected at runtime via environment variables or a secret manager — they are never baked into the image. |
+
+### Running locally
+
+```bash
+docker compose up --build
+```
+
+The `api` service runs as user `mux` (UID 1001). To debug as root:
+
+```bash
+docker compose exec --user root api sh
+```
+
+See [docs/DOCKER-COMPOSE-LOCAL.md](docs/DOCKER-COMPOSE-LOCAL.md) for the full local setup guide.
+
+### Production notes
+
+For Kubernetes or ECS deployments, apply the same `USER` and `securityOpt`
+settings from `docker-compose.yml`, and consider adding a
+`readOnlyRootFilesystem` root-level mount with `tmpfs` for `/tmp` and Prisma
+cache writes.
 
 ---
 
