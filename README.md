@@ -502,6 +502,27 @@ payment operations are not blocked by downstream webhook failures.
 
 This project uses **PostgreSQL** via **Prisma ORM**. You must set the `DATABASE_URL` environment variable before running migrations or starting the server.
 
+### Quick Start with Docker Compose (Recommended for Local Development)
+
+For the fastest local setup with zero host dependencies (Node.js, pnpm, PostgreSQL), use Docker Compose:
+
+```bash
+# 1. Copy and configure environment variables
+cp .env.example .env
+# Edit .env with your values (see docs/DOCKER-COMPOSE-LOCAL.md for required variables)
+
+# 2. Start the stack (API + PostgreSQL)
+docker compose up --build
+
+# 3. Run database migrations (in a separate terminal)
+docker compose exec api npx prisma migrate deploy
+
+# 4. Verify the API is healthy
+curl http://localhost:3000/v1/health
+```
+
+See [docs/DOCKER-COMPOSE-LOCAL.md](docs/DOCKER-COMPOSE-LOCAL.md) for complete documentation including useful commands, port configuration, troubleshooting, and connecting external clients.
+
 ### Environment Variables
 
 Copy `.env.example` to `.env` (or create `.env`) and set:
