@@ -182,6 +182,39 @@ platforms or law enforcement — for research that complies with this policy.
   rotate encryption/relayer keys immediately if exposure is suspected.
 - **Webhook secret rotation**: [docs/webhook-secret-rotation-runbook.md](docs/webhook-secret-rotation-runbook.md)
 
+## Container Hardening
+
+The production `Dockerfile` runs the API as a non-root user (`mux`, UID 1001)
+and applies defense-in-depth controls. This section documents the
+invariants and operational expectations.
+
+### Invariants
+
+1. The container **never runs as root**. The `mux` user (UID 1001) owns
+   all application files and executes the process.
+2. New privileges are **denied at runtime** (`no-new-privileges:true`).
+   The container cannot gain additional Linux capabilities after start.
+3. The production image is **minimal**: only runtime dependencies,
+   built artifacts, and Prisma migrations are present. Build tools,
+   source code, and dev dependencies are excluded.
+4. Secrets are **never baked into the image**. They are injected at
+   runtime via environment variables or a secret manager.
+5. Migration failures are **fail-closed**: `docker-entrypoint.sh` exits
+   non-zero if `prisma migrate deploy` fails, so orchestrators
+   (Kubernetes, ECS) detect the failure and restart rather than running
+   against a stale schema.
+6. No secrets, JWTs, or raw key material appear in container logs,
+   error responses, or metrics.
+
+### Operational notes
+
+- For local development, `docker compose up --build` runs the `api`
+  service as user `mux` (UID 1001). Use `docker compose exec --user
+  root api sh` only for debugging, and never in production.
+- For Kubernetes/ECS, apply the same `USER` and `securityOpt` settings
+  from `docker-compose.yml`, and consider `readOnlyRootFilesystem`
+  with `tmpfs` for `/tmp` and Prisma cache writes.
+
 ## Security Best Practices for Contributors
 
 - Never commit secrets, private keys, or credentials to the repository.
@@ -213,6 +246,23 @@ The scripts never print raw key material, JWTs, or webhook secrets. If an
 invariant changes, update the script **and** its cited reference document in the
 same PR (see README § Verification Scripts and `docs/custody-security-model.md`).
 Do not bypass these gates with `continue-on-error`.
+
+### Fee Sponsorship Budgets
+
+Fee sponsorship budgets control how much a sponsor is willing to pay in
+transaction fees on behalf of a sponsored wallet. This is a money-path
+surface and must be treated with extra care.
+
+- All fee sponsorship write endpoints are gated by the `FEE_SPONSORSHIP_ENABLED`
+  feature flag for mainnet. Default OFF (fail-closed).
+- Authz is enforced on every operation: only the wallet owner or an authorized
+  delegate/guardian may manage budgets.
+- Idempotency keys prevent concurrent/replayed requests from creating duplicate
+  budgets or double-spending.
+- No secrets, JWTs, or raw key material appear in fee sponsorship logs, error
+  responses, or metrics.
+- See [README.md](README.md#fee-sponsorship-budgets) for the full API reference
+  and operational guidance.
 
 ## Stellar Wave Contributors
 
