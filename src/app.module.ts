@@ -4,6 +4,7 @@ import { WalletsModule } from './wallets/wallets.module';
 import { FeeSponsorshipModule } from './fee-sponsorship/fee-sponsorship.module';
 import { BalanceIndexerModule } from './balance-indexer/balance-indexer.module';
 import { KeyManagementModule } from './key-management/key-management.module';
+import { IdempotencyModule } from './idempotency/idempotency.module';
 import { ApiKeyGuard } from './api-keys/api-key.guard';
 import { ApiKeyService } from './api-keys/api-key.service';
 import { MetricsService } from './common/metrics/metrics.service';
@@ -18,6 +19,7 @@ import { ResponseSanitizerInterceptor } from './common/interceptors/response-san
     WalletsModule,
     FeeSponsorshipModule,
     KeyManagementModule,
+    IdempotencyModule,
     BalanceIndexerModule,
   ],
   providers: [
@@ -34,6 +36,7 @@ import { ResponseSanitizerInterceptor } from './common/interceptors/response-san
     WalletsModule,
     FeeSponsorshipModule,
     KeyManagementModule,
+    IdempotencyModule,
     BalanceIndexerModule,
   ],
 })
