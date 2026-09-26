@@ -1,54 +1,43 @@
-import { Injectable, NestMiddleware, Logger } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
-import { REQUEST_ID_HEADER, MAX_REQUEST_ID_LENGTH } from '../interceptors/request-id.interceptor';
 
 /**
- * Middleware that ensures every request has a correlation id
- * in the x-request-id header. If the client supplies one,
- * it is validated and passed through; otherwise a server-generated
- * id is set.
+ * Request logging middleware that logs incoming requests with correlation IDs.
  *
- * The correlation id is also attached to the request object so
- * downstream handlers can access it without re-reading headers.
+ * This middleware logs the request method, path, and correlation ID
+ * for observability. It integrates with the request-id interceptor
+ * to propagate correlation IDs across services.
  */
-@Injectable()
-export class RequestLoggingMiddleware implements NestMiddleware {
-  private readonly logger = new Logger('RequestLogging');
+export function requestLogger(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  const start = Date.now();
+  const requestId = req.headers['x-request-id'] as string | undefined;
 
-  use(req: Request, res: Response, next: NextFunction): void {
-    const incomingId = req.headers[REQUEST_ID_HEADER] as string | undefined;
-    const requestId = this.normalizeRequestId(incomingId);
+  // Log the incoming request
+  const logData = {
+    method: req.method,
+    path: req.path,
+    requestId: requestId ?? 'none',
+    userAgent: req.headers['user-agent'],
+    ip: req.ip,
+  };
 
-    // Attach to request for downstream use
-    (req as any).requestId = requestId;
+  console.log('Incoming request:', JSON.stringify(logData));
 
-    // Set response header so the client can correlate
-    res.setHeader(REQUEST_ID_HEADER, requestId);
+  // Log response when finished
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const responseLog = {
+      ...logData,
+      statusCode: res.statusCode,
+      durationMs: duration,
+    };
+    console.log('Response:', JSON.stringify(responseLog));
+  });
 
-    this.logger.debug(`${req.method} ${req.url} requestId=${requestId}`);
-
-    next();
-  }
-
-  private normalizeRequestId(incoming: string | undefined): string {
-    if (!incoming) {
-      return this.generateRequestId();
-    }
-
-    if (incoming.length > MAX_REQUEST_ID_LENGTH) {
-      return this.generateRequestId();
-    }
-
-    // Only allow safe characters to prevent log injection
-    const pattern = /^[A-Za-z0-9._:-]+$/;
-    if (!pattern.test(incoming)) {
-      return this.generateRequestId();
-    }
-
-    return incoming;
-  }
-
-  private generateRequestId(): string {
-    return crypto.randomUUID();
-  }
+  next();
 }
+
+export default requestLogger;
