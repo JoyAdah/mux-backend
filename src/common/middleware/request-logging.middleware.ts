@@ -1,4 +1,3 @@
-import { Injectable, NestMiddleware, Logger } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'crypto';
 import { REQUEST_ID_HEADER, resolveRequestId } from '../interceptors';
@@ -15,7 +14,7 @@ export class RequestLoggingMiddleware implements NestMiddleware {
 
   use(req: Request, res: Response, next: NextFunction): void {
     const startTime = Date.now();
-    
+
     // Resolve or generate request ID
     const requestId = resolveRequestId(req.headers[REQUEST_ID_HEADER]);
     req.headers[REQUEST_ID_HEADER] = requestId;
