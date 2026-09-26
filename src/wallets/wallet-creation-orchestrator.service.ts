@@ -1,6 +1,7 @@
 import { Injectable, Logger, ConflictException } from '@nestjs/common';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import { randomUUID } from 'crypto';
+import { EncryptionService } from '../encryption/encryption.service';
 
 /** Networks a wallet may be created on. */
 export const VALID_NETWORKS: ReadonlySet<string> = new Set([
@@ -43,6 +44,13 @@ export interface WalletCreationResult {
   id: string;
   userId: string;
   publicKey: string;
+  /**
+   * AES-256-GCM envelope for the Stellar secret seed, as persisted in
+   * `Wallet.encryptedSecret`. This is the ONLY representation of the secret
+   * that leaves this service: the plaintext seed is never returned, logged,
+   * or persisted.
+   */
+  encryptedSecret: string;
   network: WalletNetwork;
   status: WalletStatus;
   idempotencyKey?: string;
@@ -67,6 +75,11 @@ export class WalletOrchestrationError extends Error {
  * Fail-closed: if a phase fails, no partial wallet is left behind and the
  * failure is surfaced with a typed phase so the caller can distinguish a
  * dependency outage from a client error.
+ *
+ * Custody invariant: the Stellar secret seed is encrypted with
+ * `EncryptionService` (AES-256-GCM) before it leaves this method. The result
+ * carries only the ciphertext envelope, so a plaintext seed can never reach
+ * the database, a log, or an API response.
  *
  * ## Retry / replay contract (#963)
  *
@@ -104,6 +117,32 @@ export class WalletCreationOrchestrator {
     userId: string,
     network: WalletNetwork,
   ): string => `${userId}:${network}`;
+
+  constructor(private readonly encryptionService: EncryptionService) {}
+
+  /**
+   * Creates a wallet for `userId` on `network`, or returns the existing one.
+   *
+   * @param request User, network, and optional idempotency key.
+   * @returns The wallet plus whether this call created it.
+   * @throws WalletOrchestrationError on a failure in keygen/persist/lookup.
+   * @throws ConflictException when an idempotency key is reused for a
+   *   different user or network, or when a concurrent call with the same key is
+   *   still in flight.
+   */
+  async createWallet(
+    userId: string,
+    network: WalletNetwork,
+    idempotencyKey: string,
+  ): Promise<WalletCreationResult> {
+    const publicKey = `G${randomUUID().slice(0, 55)}`;
+    const secretSeed = `S${randomUUID().slice(0, 55)}`;
+
+    // Encrypt before the secret can be persisted or returned. Throwing here
+    // (e.g. missing WALLET_ENCRYPTION_KEY) aborts creation rather than falling
+    // back to storing the seed in plaintext.
+    const encryptedSecret =
+      this.encryptionService.encryptAndSerialize(secretSeed);
 
   /**
    * Creates a wallet for `userId` on `network`, or returns the existing one.
@@ -232,6 +271,12 @@ export class WalletCreationOrchestrator {
       id: randomUUID(),
       userId,
       publicKey,
+      encryptedSecret,
+      network,
+      status: WalletStatus.ACTIVE,
+      idempotencyKey,
+      createdAt: new Date(),
+    };
       network,
       status: WalletStatus.ACTIVE,
       idempotencyKey,

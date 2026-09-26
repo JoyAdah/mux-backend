@@ -120,6 +120,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify encryption spec is present
+        # #964: Fail closed if the spec is missing so the custody-encryption
+        # contract can never be silently un-gated.
+        run: test -f src/encryption/encryption.service.spec.ts
+
+      - name: Run encryption service unit tests
+        # Pure crypto unit tests: no DB, no network, no secrets.
+        run: pnpm exec jest --runTestsByPath src/encryption/encryption.service.spec.ts
+
       - name: Verify wallet orchestration e2e spec is present
         # #963: Fail closed if the spec is missing so the retry contract can
         # never be silently un-gated.
